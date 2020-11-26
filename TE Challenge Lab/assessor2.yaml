@@ -1,0 +1,119 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: ACG Challenge Lab and Self-Assessor
+Resources:
+  S3Bucket:
+      Type: 'AWS::S3::Bucket'
+      Properties:
+          AccessControl: PublicRead
+          MetricsConfigurations:
+              - Id: EntireBucket
+          WebsiteConfiguration:
+              IndexDocument: index.html
+              ErrorDocument: error.html
+      DeletionPolicy: Retain
+  RoleLambdaS3TextFileCreator:
+    Type: AWS::IAM::Role
+    Properties:
+      ManagedPolicyArns:
+        - !Ref "PolicyManagedLambdaS3TextFileCreator"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Path: /
+  PolicyManagedLambdaS3TextFileCreator:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: !Join
+        - "-"
+        - - !Ref "AWS::StackName"
+          - PolicyManagedLambdaS3TextFileCreator
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - s3:ListAllMyBuckets
+              - s3:GetBucketLocation
+            Resource:
+              - arn:aws:s3:::*
+          - Effect: Allow
+            Action:
+              - s3:*
+            Resource:
+              - !GetAtt "S3Bucket.Arn"
+              - !Join
+                - ""
+                - - !GetAtt "S3Bucket.Arn"
+                  - /*
+          - Effect: Allow
+            Action:
+              - logs:*
+            Resource:
+              - arn:aws:logs:*:*:*
+  LambdaLookupFileCreator:
+    Type: AWS::Lambda::Function
+    Properties:
+      Description: Generate text lookup file in lab s3 bucket.
+      Handler: index.lambda_handler
+      Role: !GetAtt "RoleLambdaS3TextFileCreator.Arn"
+      Runtime: python3.7
+      Timeout: 60
+      Code:
+        ZipFile: !Join
+          - "\n"
+          - - import cfnresponse;
+            - import json;
+            - import boto3;
+            - ""
+            - "def lambda_handler(event, context):"
+            - ""
+            - "    responseData = {};"
+            - ""
+            - "    try:"
+            - !Join
+              - ""
+              - - "        bucket = "
+                - !Ref "S3Bucket"
+            - ""
+            - "        s3boto3 = boto3.resource('s3',region_name='us-east-1');"
+            - ""
+            - "        fileName = 'labreferences.txt'"
+            - "        s3boto3.Object(s3Bucket,fileName).put(Body='');"
+            - "        print('Populated s3://' + s3Bucket);"
+            - "        responseData['bucket'] = s3Bucket;"
+            - ""
+            - "        cfnresponse.send(event, context, cfnresponse.SUCCESS, responseData
+              );"
+            - "        print('Successfully populated S3 bucket.');"
+            - ""
+            - "    except Exception as e:"
+            - "        print('### Error creating s3 text file: ');"
+            - "        print(e);"
+            - "        cfnresponse.send(event, context, cfnresponse.FAILED, responseData
+              );"
+  DeployS3Contents:
+    Type: Custom::CustomLookupFile
+    Properties:
+      ServiceToken: !GetAtt "LambdaLookupFileCreator.Arn"
+Outputs:
+  WebsiteURL:
+    Value:
+      'Fn::GetAtt':
+        - S3Bucket
+        - WebsiteURL
+    Description: URL for website hosted on S3
+  S3BucketSecureURL:
+    Value:
+      'Fn::Join':
+        - ''
+        - - 'https://'
+          - 'Fn::GetAtt':
+              - S3Bucket
+              - DomainName
+    Description: Name of S3 bucket to hold website content

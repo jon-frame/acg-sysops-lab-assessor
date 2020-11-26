@@ -1,0 +1,791 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Using EC2 Roles and Instance Profiles
+Resources:
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      CidrBlock: 10.0.0.0/16
+      Tags:
+        - Key: Application
+          Value: !Ref "AWS::StackId"
+        - Key: Name
+          Value: A Cloud Guru
+        - Key: Network
+          Value: VPC
+  Subnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref "VPC"
+      CidrBlock: 10.0.1.0/24
+      Tags:
+        - Key: Application
+          Value: !Ref "AWS::StackId"
+        - Key: Name
+          Value: sn-dmz1
+      AvailabilityZone: !Select
+        - "0"
+        - !GetAZs ""
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Application
+          Value: !Ref "AWS::StackId"
+  AttachGateway:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref "VPC"
+      InternetGatewayId: !Ref "InternetGateway"
+  RouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref "VPC"
+      Tags:
+        - Key: Application
+          Value: !Ref "AWS::StackId"
+        - Key: Name
+          Value: rt-dmz1-public
+  Route:
+    Type: AWS::EC2::Route
+    DependsOn: AttachGateway
+    Properties:
+      RouteTableId: !Ref "RouteTable"
+      DestinationCidrBlock: "0.0.0.0/0"
+      GatewayId: !Ref "InternetGateway"
+  SubnetRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref "Subnet"
+      RouteTableId: !Ref "RouteTable"
+  NetworkAcl:
+    Type: AWS::EC2::NetworkAcl
+    Properties:
+      VpcId: !Ref "VPC"
+      Tags:
+        - Key: Application
+          Value: !Ref "AWS::StackId"
+        - Key: Name
+          Value: nacl-dmz1-public
+  InboundHTTPNetworkAclEntry:
+    Type: AWS::EC2::NetworkAclEntry
+    Properties:
+      NetworkAclId: !Ref "NetworkAcl"
+      RuleNumber: 100
+      Protocol: 6
+      RuleAction: allow
+      Egress: false
+      CidrBlock: "0.0.0.0/0"
+      PortRange:
+        From: 80
+        To: 80
+  InboundSSHNetworkAclEntry:
+    Type: AWS::EC2::NetworkAclEntry
+    Properties:
+      NetworkAclId: !Ref "NetworkAcl"
+      RuleNumber: 101
+      Protocol: 6
+      RuleAction: allow
+      Egress: false
+      CidrBlock: "0.0.0.0/0"
+      PortRange:
+        From: 22
+        To: 22
+  InboundResponsePortsNetworkAclEntry:
+    Type: AWS::EC2::NetworkAclEntry
+    Properties:
+      NetworkAclId: !Ref "NetworkAcl"
+      RuleNumber: 102
+      Protocol: 6
+      RuleAction: allow
+      Egress: false
+      CidrBlock: "0.0.0.0/0"
+      PortRange:
+        From: 1024
+        To: 65535
+  OutBoundHTTPNetworkAclEntry:
+    Type: AWS::EC2::NetworkAclEntry
+    Properties:
+      NetworkAclId: !Ref "NetworkAcl"
+      RuleNumber: 100
+      Protocol: 6
+      RuleAction: allow
+      Egress: true
+      CidrBlock: "0.0.0.0/0"
+      PortRange:
+        From: 80
+        To: 80
+  OutBoundHTTPSNetworkAclEntry:
+    Type: AWS::EC2::NetworkAclEntry
+    Properties:
+      NetworkAclId: !Ref "NetworkAcl"
+      RuleNumber: 101
+      Protocol: 6
+      RuleAction: allow
+      Egress: true
+      CidrBlock: "0.0.0.0/0"
+      PortRange:
+        From: 443
+        To: 443
+  OutBoundResponsePortsNetworkAclEntry:
+    Type: AWS::EC2::NetworkAclEntry
+    Properties:
+      NetworkAclId: !Ref "NetworkAcl"
+      RuleNumber: 102
+      Protocol: 6
+      RuleAction: allow
+      Egress: true
+      CidrBlock: "0.0.0.0/0"
+      PortRange:
+        From: 1024
+        To: 65535
+  SubnetNetworkAclAssociation:
+    Type: AWS::EC2::SubnetNetworkAclAssociation
+    Properties:
+      SubnetId: !Ref "Subnet"
+      NetworkAclId: !Ref "NetworkAcl"
+  SecurityGroupHTTPAndSSH:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      VpcId: !Ref "VPC"
+      GroupDescription: HTTP and SSH Access
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: "0.0.0.0/0"
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: "0.0.0.0/0"
+      Tags:
+        - Key: Name
+          Value: HTTP and SSH Access
+  RoleLambdaPasswordGenerator:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Path: /
+  PolicyLambdaGeneratePassword:
+    Type: AWS::IAM::Policy
+    Properties:
+      Roles:
+        - !Ref "RoleLambdaPasswordGenerator"
+      PolicyName: LambdaPasswordGeneratorPolicy
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - logs:*
+            Resource:
+              - arn:aws:logs:*:*:*
+  LambdaGeneratePassword:
+    Type: AWS::Lambda::Function
+    Properties:
+      Description: Generate a random password.
+      Handler: index.lambda_handler
+      Role: !GetAtt "RoleLambdaPasswordGenerator.Arn"
+      Runtime: python3.7
+      Timeout: 5
+      Code:
+        ZipFile: !Join
+          - "\n"
+          - - import cfnresponse;
+            - import json;
+            - import string;
+            - "import random;\n"
+            - "PASSWORD_LENGTH = 12;\n"
+            - "def lambda_handler(event, context):"
+            - "    print('## EVENT ##')"
+            - "    print(event)"
+            - "    responseData = {};\n"
+            - "    try:"
+            - "        chars = string.ascii_uppercase + string.ascii_lowercase + string.digits;"
+            - "        responseData['password'] =  ''.join(random.choice(chars)
+              for x in range(PASSWORD_LENGTH));"
+            - "        cfnresponse.send(event, context, cfnresponse.SUCCESS, responseData\
+              \ );\n"
+            - "    except Exception as e:"
+            - "        print ('Error running PasswordGenerator');"
+            - "        print (e);"
+            - "        cfnresponse.send(event, context, cfnresponse.FAILED, responseData\
+              \ );\n"
+            - "    return responseData;"
+  CustomPasswordBastion:
+    Type: Custom::CustomPasswordBastion
+    Properties:
+      Length: 8
+      ServiceToken: !GetAtt "LambdaGeneratePassword.Arn"
+  CustomPasswordWebServer:
+    Type: Custom::CustomPasswordWebServer
+    Properties:
+      Length: 8
+      ServiceToken: !GetAtt "LambdaGeneratePassword.Arn"
+  RoleBastionHost:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ec2.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Path: /
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonEC2FullAccess
+        - arn:aws:iam::aws:policy/IAMFullAccess
+  InstanceProfileBastionHost:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Path: /
+      Roles:
+        - !Ref "RoleBastionHost"
+  EC2InstanceBastion:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: "%ami-203%"
+      InstanceType: t3.micro
+      UserData: !Base64 |
+        #!/bin/bash -xe
+        echo '%password%' | passwd cloud_user --stdin        
+        yum update -y
+        yum install -y httpd
+        service httpd start
+        chkconfig httpd on
+        groupadd www
+        usermod -a -G www cloud_user
+        echo '<html><h1>Using EC2 Roles and Instance Profiles Hands-On Lab</h1><h3>Bastion Host</h3><h3>Availability Zone: ' > /var/www/html/index.html
+        curl http://169.254.169.254/latest/meta-data/placement/availability-zone >> /var/www/html/index.html
+        echo '</h3> <h3>Instance Id: ' >> /var/www/html/index.html
+        curl http://169.254.169.254/latest/meta-data/instance-id >> /var/www/html/index.html
+        echo '</h3></html> ' >> /var/www/html/index.html
+      Tags:
+        - Key: Application
+          Value: !Ref "AWS::StackId"
+        - Key: Name
+          Value: Bastion Host
+      IamInstanceProfile: !Ref "InstanceProfileBastionHost"
+      NetworkInterfaces:
+        - GroupSet:
+            - !Ref "SecurityGroupHTTPAndSSH"
+          AssociatePublicIpAddress: true
+          DeviceIndex: "0"
+          DeleteOnTermination: true
+          SubnetId: !Ref "Subnet"
+  EC2InstanceWebServer:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: "%ami-203%"
+      InstanceType: t3.micro
+      UserData: !Base64 |
+        #!/bin/bash -xe
+        echo '%password%' | passwd cloud_user --stdin        
+        yum update -y
+        yum install -y httpd
+        service httpd start
+        chkconfig httpd on
+        groupadd www
+        usermod -a -G www cloud_user
+        echo '<html><h1>Using EC2 Roles and Instance Profiles Hands-On Lab</h1><h3>Web Server</h3><h3>Availability Zone: ' > /var/www/html/index.html
+        curl http://169.254.169.254/latest/meta-data/placement/availability-zone >> /var/www/html/index.html
+        echo '</h3> <h3>Instance Id: ' >> /var/www/html/index.html
+        curl http://169.254.169.254/latest/meta-data/instance-id >> /var/www/html/index.html
+        echo '</h3></html> ' >> /var/www/html/index.html
+      Tags:
+        - Key: Application
+          Value: !Ref "AWS::StackId"
+        - Key: Name
+          Value: Web Server
+      NetworkInterfaces:
+        - GroupSet:
+            - !Ref "SecurityGroupHTTPAndSSH"
+          AssociatePublicIpAddress: true
+          DeviceIndex: "0"
+          DeleteOnTermination: true
+          SubnetId: !Ref "Subnet"
+  EC2InstanceDBServer:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: "%ami-203%"
+      InstanceType: t3.micro
+      NetworkInterfaces:
+         - GroupSet:
+             - !Ref "SecurityGroupHTTPAndSSH"
+           AssociatePublicIpAddress: true
+           DeviceIndex: "0"
+           DeleteOnTermination: true
+           SubnetId: !Ref "Subnet"
+  s3BucketDev:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      Tags:
+        - Key: Application
+          Value: !Ref "AWS::StackId"
+  s3BucketProd:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      Tags:
+        - Key: Application
+          Value: !Ref "AWS::StackId"
+  s3BucketEngineering:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      Tags:
+        - Key: Application
+          Value: !Ref "AWS::StackId"
+  s3BucketSecret:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      Tags:
+        - Key: Application
+          Value: !Ref "AWS::StackId"
+  s3BucketLookupFiles:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      Tags:
+        - Key: Application
+          Value: !Ref "AWS::StackId"
+  IAMGroupEngineering:
+    Type: AWS::IAM::Group
+    Properties:
+      GroupName: !Join
+        - "-"
+        - - !Ref "AWS::StackName"
+          - IAMGroupEngineering
+  UserEngineerScotty:
+    Type: AWS::IAM::User
+    Properties:
+      Groups:
+        - !Ref "IAMGroupEngineering"
+      UserName: !Join
+        - "-"
+        - - !Ref "AWS::StackName"
+          - EngineerScotty
+
+  AccessKeyEngineerScotty:
+    Type: AWS::IAM::AccessKey
+    Properties:
+      UserName: !Ref "UserEngineerScotty"
+
+  PolicyEngineeringBucketAccess:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: !Join
+        - "-"
+        - - !Ref "AWS::StackName"
+          - EngineeringBucketAccess
+      Groups:
+        - !Ref "IAMGroupEngineering"
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - s3:ListAllMyBuckets
+              - s3:GetBucketLocation
+            Resource:
+              - arn:aws:s3:::*
+          - Effect: Allow
+            Action:
+              - s3:Get*
+              - s3:List*
+            Resource:
+              - !GetAtt "s3BucketEngineering.Arn"
+
+  IAMGroupSecret:
+    Type: AWS::IAM::Group
+    Properties:
+      GroupName: !Join
+        - "-"
+        - - !Ref "AWS::StackName"
+          - IAMGroupSecret
+
+  UserCaptainKirk:
+    Type: AWS::IAM::User
+    Properties:
+      Groups:
+        - !Ref "IAMGroupSecret"
+      UserName: !Join
+        - "-"
+        - - !Ref "AWS::StackName"
+          - CaptainKirk
+
+  AccessKeyCaptainKirk:
+    Type: AWS::IAM::AccessKey
+    Properties:
+      UserName: !Ref "UserCaptainKirk"
+
+  PolicySecretBucketAccess:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: !Join
+        - "-"
+        - - !Ref "AWS::StackName"
+          - SecretBucketAccess
+      Groups:
+        - !Ref "IAMGroupSecret"
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - s3:ListAllMyBuckets
+              - s3:GetBucketLocation
+            Resource:
+              - arn:aws:s3:::*
+          - Effect: Allow
+            Action:
+              - s3:Get*
+              - s3:List*
+            Resource:
+              - !GetAtt "s3BucketSecret.Arn"
+
+  PolicyManagedLambdaS3TextFileCreator:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: !Join
+        - "-"
+        - - !Ref "AWS::StackName"
+          - PolicyManagedLambdaS3TextFileCreator
+      Groups:
+        - !Ref "IAMGroupSecret"
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - s3:ListAllMyBuckets
+              - s3:GetBucketLocation
+            Resource:
+              - arn:aws:s3:::*
+          - Effect: Allow
+            Action:
+              - s3:*
+            Resource:
+              - !GetAtt "s3BucketDev.Arn"
+              - !GetAtt "s3BucketProd.Arn"
+              - !GetAtt "s3BucketEngineering.Arn"
+              - !GetAtt "s3BucketSecret.Arn"
+              - !GetAtt "s3BucketLookupFiles.Arn"
+              - !Join
+                - ""
+                - - !GetAtt "s3BucketDev.Arn"
+                  - /*
+              - !Join
+                - ""
+                - - !GetAtt "s3BucketProd.Arn"
+                  - /*
+              - !Join
+                - ""
+                - - !GetAtt "s3BucketEngineering.Arn"
+                  - /*
+              - !Join
+                - ""
+                - - !GetAtt "s3BucketSecret.Arn"
+                  - /*
+              - !Join
+                - ""
+                - - !GetAtt "s3BucketLookupFiles.Arn"
+                  - /*
+          - Effect: Allow
+            Action:
+              - logs:*
+            Resource:
+              - arn:aws:logs:*:*:*
+
+  RoleLambdaS3TextFileCreator:
+    Type: AWS::IAM::Role
+    Properties:
+      ManagedPolicyArns:
+        - !Ref "PolicyManagedLambdaS3TextFileCreator"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Path: /
+
+  LambdaS3TextFileCreator:
+    Type: AWS::Lambda::Function
+    Properties:
+      Description: Generate text files in lab s3 bucekts.
+      Handler: index.lambda_handler
+      Role: !GetAtt "RoleLambdaS3TextFileCreator.Arn"
+      Runtime: python3.7
+      Timeout: 60
+      Code:
+        ZipFile: !Join
+          - "\n"
+          - - import cfnresponse;
+            - import json;
+            - import boto3;
+            - ""
+            - "def lambda_handler(event, context):"
+            - ""
+            - "    responseData = {};"
+            - ""
+            - "    try:"
+            - "        s3Buckets = ["
+            - !Join
+              - ""
+              - - "            '"
+                - !Ref "s3BucketDev"
+                - "', "
+            - !Join
+              - ""
+              - - "            '"
+                - !Ref "s3BucketProd"
+                - "', "
+            - !Join
+              - ""
+              - - "            '"
+                - !Ref "s3BucketEngineering"
+                - "', "
+            - !Join
+              - ""
+              - - "            '"
+                - !Ref "s3BucketSecret"
+                - "' "
+            - "        ];"
+            - "        s3boto3 = boto3.resource('s3',region_name='us-east-1');"
+            - "        fileContent = 'You can do anything you put your mind to.';"
+            - ""
+            - "        for s3Bucket in s3Buckets:"
+            - "            for i in range(1, 6):"
+            - "                fileName = 'file' + str(i) + '-' + s3Bucket;"
+            - "                s3boto3.Object(s3Bucket,fileName).put(Body=fileContent);"
+            - "                print('Created s3://' + s3Bucket + '/' + fileName);"
+            - "                responseData['file' + str(i)] = fileName;"
+            - ""
+            - "        cfnresponse.send(event, context, cfnresponse.SUCCESS, responseData
+              );"
+            - "        print('Successfully created text files in the S3 buckets.');"
+            - ""
+            - "    except Exception as e:"
+            - "        print('### Error creating s3 text file: ');"
+            - "        print(e);"
+            - "        cfnresponse.send(event, context, cfnresponse.FAILED, responseData
+              );"
+
+  Customs3TextFiles:
+    Type: Custom::Customs3TextFiles
+    Properties:
+      ServiceToken: !GetAtt "LambdaS3TextFileCreator.Arn"
+
+  LambdaLookupFileCreator:
+    Type: AWS::Lambda::Function
+    Properties:
+      Description: Generate text lookup file in lab s3 bucket.
+      Handler: index.lambda_handler
+      Role: !GetAtt "RoleLambdaS3TextFileCreator.Arn"
+      Runtime: python3.7
+      Timeout: 60
+      Code:
+        ZipFile: !Join
+          - "\n"
+          - - import cfnresponse;
+            - import json;
+            - import boto3;
+            - ""
+            - "def lambda_handler(event, context):"
+            - ""
+            - "    responseData = {};"
+            - ""
+            - "    try:"
+            - !Join
+              - ""
+              - - "        fileContent = \"\"\"\nDev s3 bucket name = "
+                - !Ref "s3BucketDev"
+                - "\n\nProd s3 bucket name = "
+                - !Ref "s3BucketProd"
+                - "\n\nEngineering s3 bucket name = "
+                - !Ref "s3BucketEngineering"
+                - "\n\nSecret s3 bucket name = "
+                - !Ref "s3BucketSecret"
+                - "\n\"\"\";"
+            - ""
+            - "        s3boto3 = boto3.resource('s3',region_name='us-east-1');"
+            - !Join
+              - ""
+              - - "        s3Bucket = '"
+                - !Ref "s3BucketLookupFiles"
+                - "';"
+            - ""
+            - "        fileName = 'labreferences.txt'"
+            - "        s3boto3.Object(s3Bucket,fileName).put(Body='');"
+            - "        print('Created s3://' + s3Bucket + '/' + fileName);"
+            - "        responseData['file'] = fileName;"
+            - ""
+            - "        cfnresponse.send(event, context, cfnresponse.SUCCESS, responseData
+              );"
+            - "        print('Successfully created refence file in the S3 bucket.');"
+            - ""
+            - "    except Exception as e:"
+            - "        print('### Error creating s3 text file: ');"
+            - "        print(e);"
+            - "        cfnresponse.send(event, context, cfnresponse.FAILED, responseData
+              );"
+  CustomLookupFile:
+    Type: Custom::CustomLookupFile
+    Properties:
+      ServiceToken: !GetAtt "LambdaLookupFileCreator.Arn"
+  CloudTrailLogGroup:
+    Type: AWS::Logs::LogGroup
+  CloudTrail:
+    Type: AWS::CloudTrail::Trail
+    Properties:
+      IncludeGlobalServiceEvents: true
+      IsLogging: true
+      IsMultiRegionTrail: false
+      S3BucketName: !Ref "CloudTrailBucket"
+      CloudWatchLogsLogGroupArn: !GetAtt "CloudTrailLogGroup.Arn"
+      CloudWatchLogsRoleArn: !GetAtt "CloudTrailRole.Arn"
+    DependsOn:
+      - CloudTrailBucketPolicy
+  CloudTrailRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Action:
+              - sts:AssumeRole
+            Effect: Allow
+            Principal:
+              Service:
+                - cloudtrail.amazonaws.com
+      Policies:
+        - PolicyName: logs
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:*
+                Resource: "*"
+  CloudTrailBucket:
+    Type: AWS::S3::Bucket
+  CloudTrailBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref "CloudTrailBucket"
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AWSCloudTrailAclCheck
+            Effect: Allow
+            Principal:
+              Service: cloudtrail.amazonaws.com
+            Action: s3:GetBucketAcl
+            Resource: !GetAtt "CloudTrailBucket.Arn"
+          - Sid: AWSCloudTrailWrite
+            Effect: Allow
+            Principal:
+              Service: cloudtrail.amazonaws.com
+            Action: s3:PutObject
+            Resource: !Sub "${CloudTrailBucket.Arn}/*"
+            Condition:
+              StringEquals:
+                s3:x-amz-acl: bucket-owner-full-control
+Outputs:
+  Group1BastionCustomPassword:
+    Description: Bastion password
+    Value: !GetAtt "CustomPasswordBastion.password"
+  Group1BastionpubIpAddress:
+    Description: Public IP address of Bastion Server
+    Value: !GetAtt "EC2InstanceBastion.PublicIp"
+  Group2WebServerCustomPassword:
+    Description: Web Server password
+    Value: !GetAtt "CustomPasswordWebServer.password"
+  Group2WebServerpubIpAddress:
+    Description: Public IP address of Web Server
+    Value: !GetAtt "EC2InstanceWebServer.PublicIp"
+  Group2DBServerpubIpAddress:
+    Description: Public IP address of MySQL DB Server
+    Value: !GetAtt "EC2InstanceDBServer.PublicIp"
+  Group3s3BucketDevName:
+    Description: Dev S3 Bucket Name
+    Value: !Ref "s3BucketDev"
+  Group3s3BucketProdName:
+    Description: Prod S3 Bucket Name
+    Value: !Ref "s3BucketProd"
+  Group4s3BucketEngineeringName:
+    Description: Engineering S3 Bucket Name
+    Value: !Ref "s3BucketEngineering"
+  Group4s3BucketSecretName:
+    Description: Secret S3 Bucket Name
+    Value: !Ref "s3BucketSecret"
+  Group5EngineerScottyPublicKey:
+    Description: Engineer Scotty's Public Key
+    Value: !Ref "AccessKeyEngineerScotty"
+  Group5EngineerScottyPrivateKey:
+    Description: Engineer Scotty's Private Key
+    Value: !GetAtt "AccessKeyEngineerScotty.SecretAccessKey"
+  Group5CaptainKirkPublicKey:
+    Description: Captain Data's Public Key
+    Value: !Ref "AccessKeyCaptainKirk"
+  Group5CaptainKirkPrivateKey:
+    Description: Captain Data's Private Key
+    Value: !GetAtt "AccessKeyCaptainKirk.SecretAccessKey"
