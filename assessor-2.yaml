@@ -1,0 +1,141 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: ACG Challenge Lab and Self-Assessor
+Parameters: 
+  BucketContents: 
+    Type: String
+    Default: https://github.com/jon-frame/acg-sysops-lab-assessor/raw/master/Assessor.zip
+    Description: Public link to ZIP file to populate the S3 bucket with for Static Website
+Resources:
+  S3Bucket:
+      Type: 'AWS::S3::Bucket'
+      Properties:
+          AccessControl: PublicRead
+          MetricsConfigurations:
+              - Id: EntireBucket
+          WebsiteConfiguration:
+              IndexDocument: index.html
+              ErrorDocument: error.html
+      DeletionPolicy: Retain
+  RoleLambdaS3TextFileCreator:
+    Type: AWS::IAM::Role
+    Properties:
+      ManagedPolicyArns:
+        - !Ref "PolicyManagedLambdaS3TextFileCreator"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Path: /
+  PolicyManagedLambdaS3TextFileCreator:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: !Join
+        - "-"
+        - - !Ref "AWS::StackName"
+          - PolicyManagedLambdaS3TextFileCreator
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - s3:ListAllMyBuckets
+              - s3:GetBucketLocation
+            Resource:
+              - arn:aws:s3:::*
+          - Effect: Allow
+            Action:
+              - s3:*
+            Resource:
+              - !GetAtt "S3Bucket.Arn"
+              - !Join
+                - ""
+                - - !GetAtt "S3Bucket.Arn"
+                  - /*
+          - Effect: Allow
+            Action:
+              - logs:*
+            Resource:
+              - arn:aws:logs:*:*:*
+  LambdaLookupFileCreator:
+    Type: AWS::Lambda::Function
+    Properties:
+      Description: Generate text lookup file in lab s3 bucket.
+      Handler: index.lambda_handler
+      Role: !GetAtt "RoleLambdaS3TextFileCreator.Arn"
+      Runtime: python3.7
+      Timeout: 60
+      Code:
+        ZipFile: !Join
+          - "\n"
+          - - import cfnresponse;
+            - import json;
+            - import boto3;
+            - import os;
+            - import glob;
+            - import urllib.request;
+            - import zipfile;
+            - import tempfile;
+            - ""
+            - "def lambda_handler(event, context):"
+            - ""
+            - "    responseData = {};"
+            - ""
+            - "    try:"
+            - !Join
+              - ""
+              - - "        bucket = '"
+                - !Ref "S3Bucket"
+                - "'"
+            - !Join
+              - ""
+              - - "        archive = '"
+                - !Ref "BucketContents"
+                - "'"
+            - "        client = boto3.client('s3');"
+            - ""
+            - "        temppath = tempfile.gettempdir()"
+            - "        urllib.request.urlretrieve(archive, '/tmp/archive.zip')"
+            - "        zipdata = zipfile.ZipFile('/tmp/archive.zip')"
+            - "        zipdata.extractall('/tmp/s3site/')"
+            - "        # unzipped the archive to /tmp/s3site"
+            - "        print(glob.glob('/tmp/s3site/*.*'))"
+            - "        for root,dirs,files in os.walk('/tmp/s3site/'):"
+            - "          for file in files:"
+            - "            client.upload_file(os.path.join(root,file),bucket,file)"
+            - "        print('Populated s3://' + bucket);"
+            - "        responseData['bucket'] = bucket;"
+            - ""
+            - "        cfnresponse.send(event, context, cfnresponse.SUCCESS, responseData
+              );"
+            - "        print('Successfully populated S3 bucket.');"
+            - ""
+            - "    except Exception as e:"
+            - "        print('### Error creating s3 text file: ');"
+            - "        print(e);"
+            - "        cfnresponse.send(event, context, cfnresponse.FAILED, responseData
+              );"
+  DeployS3Contents:
+    Type: Custom::CustomLookupFile
+    Properties:
+      ServiceToken: !GetAtt "LambdaLookupFileCreator.Arn"
+Outputs:
+  WebsiteURL:
+    Value:
+      'Fn::GetAtt':
+        - S3Bucket
+        - WebsiteURL
+    Description: URL for website hosted on S3
+  S3BucketSecureURL:
+    Value:
+      'Fn::Join':
+        - ''
+        - - 'https://'
+          - 'Fn::GetAtt':
+              - S3Bucket
+              - DomainName
+    Description: Name of S3 bucket to hold website content
